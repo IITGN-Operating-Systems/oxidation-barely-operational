@@ -4,7 +4,7 @@ use serial;
 use structopt;
 use structopt_derive::StructOpt;
 use xmodem::Xmodem;
-
+use xmodem::Progress;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -46,12 +46,46 @@ struct Opt {
     raw: bool,
 }
 
+fn progress_fn(progress: Progress) {
+    println!("Progress: {:?}", progress);
+}
+
 fn main() {
     use std::fs::File;
     use std::io::{self, BufReader};
 
     let opt = Opt::from_args();
     let mut port = serial::open(&opt.tty_path).expect("path points to invalid TTY");
+    // FIXME: Implement the ttywrite utility.
+    let mut port_config = port.read_settings().unwrap_or_else(|_| panic!("Failed to read port configuration"));
 
-    // FIXME: Implement the `ttywrite` utility.
+    port_config.set_baud_rate(connection.baud_speed).unwrap_or_else(|_| panic!("Invalid baud rate configuration"));
+    port_config.set_char_size(connection.data_bits);
+    port_config.set_stop_bits(connection.end_bits);
+    port_config.set_flow_control(connection.flow_mode);
+
+    port.apply_settings(&port_config).unwrap_or_else(|_| panic!("Couldn't configure serial interface"));
+    port.set_communication_timeout(Duration::from_secs(connection.wait_limit))
+        .expect("Timeout configuration error");
+
+    // Initialize data source
+    let mut data_source: Box<dyn io::Read> = match connection.source_file {
+        Some(path) => {
+            let input_stream = File::open(path)
+                .unwrap_or_else(|_| panic!("Unable to access input file"));
+            Box::new(BufReadContainer::new(input_stream))
+        }
+        None => Box::new(BufReadContainer::new(io::keyboard_input())),
+    };
+
+    // Execute data transfer
+    let transfer_count = if connection.direct_mode {
+        io::transfer_data(&mut data_source, &mut port)
+            .expect("Data stream copy failure")
+    } else {
+        XmodemProtocol::send_data_with_status(&mut data_source, &mut port, transfer_update)
+            .expect("XMODEM transmission failure") as u64
+    };
+
+    println!("Transferred {} bytes successfully", transfer_count);
 }
