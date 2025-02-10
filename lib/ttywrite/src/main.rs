@@ -4,7 +4,7 @@ use serial;
 use structopt;
 use structopt_derive::StructOpt;
 use xmodem::Xmodem;
-use xmodem::Progress;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -46,46 +46,44 @@ struct Opt {
     raw: bool,
 }
 
-fn progress_fn(progress: Progress) {
-    println!("Progress: {:?}", progress);
-}
-
 fn main() {
     use std::fs::File;
-    use std::io::{self, BufReader};
+    use std::io::{self, BufReader, Write};
 
     let opt = Opt::from_args();
     let mut port = serial::open(&opt.tty_path).expect("path points to invalid TTY");
-    // FIXME: Implement the ttywrite utility.
-    let mut port_config = port.read_settings().unwrap_or_else(|_| panic!("Failed to read port configuration"));
 
-    port_config.set_baud_rate(connection.baud_speed).unwrap_or_else(|_| panic!("Invalid baud rate configuration"));
-    port_config.set_char_size(connection.data_bits);
-    port_config.set_stop_bits(connection.end_bits);
-    port_config.set_flow_control(connection.flow_mode);
+    // FIXME: Implement the `ttywrite` utility.
+    let mut settings = port.read_settings().expect("failed to read settings");
+    settings.set_baud_rate(opt.baud_rate).expect("failed to set baud rate");
+    settings.set_char_size(opt.char_width);
+    settings.set_stop_bits(opt.stop_bits);
+    settings.set_flow_control(opt.flow_control);
+    port.write_settings(&settings).expect("failed to write settings");
 
-    port.apply_settings(&port_config).unwrap_or_else(|_| panic!("Couldn't configure serial interface"));
-    port.set_communication_timeout(Duration::from_secs(connection.wait_limit))
-        .expect("Timeout configuration error");
+    port.set_timeout(Duration::from_secs(opt.timeout)).expect("failed to set timeout");
 
-    // Initialize data source
-    let mut data_source: Box<dyn io::Read> = match connection.source_file {
-        Some(path) => {
-            let input_stream = File::open(path)
-                .unwrap_or_else(|_| panic!("Unable to access input file"));
-            Box::new(BufReadContainer::new(input_stream))
-        }
-        None => Box::new(BufReadContainer::new(io::keyboard_input())),
+    let mut reader: Box<dyn io::Read> = match opt.input {
+        Some(path) => Box::new(BufReader::new(File::open(path).expect("failed to open file"))),
+        None => Box::new(io::stdin()),
     };
 
-    // Execute data transfer
-    let transfer_count = if connection.direct_mode {
-        io::transfer_data(&mut data_source, &mut port)
-            .expect("Data stream copy failure")
+    if opt.raw {
+        let bytes = io::copy(&mut reader, &mut port).expect("failed to write to TTY");
+        println!("{} bytes written", bytes);
     } else {
-        XmodemProtocol::send_data_with_status(&mut data_source, &mut port, transfer_update)
-            .expect("XMODEM transmission failure") as u64
-    };
-
-    println!("Transferred {} bytes successfully", transfer_count);
+        let bytes = Xmodem::transmit_with_progress(reader, port, |progress| {
+            if let xmodem::Progress::Packet(_) = progress {
+                print!(".");
+                io::stdout().flush().expect("failed to flush stdout");
+            } else if let xmodem::Progress::Waiting = progress {
+                println!("\nWaiting for receiver...");
+            } else if let xmodem::Progress::Started = progress {
+                println!("Transmission started.");
+            }else {
+                assert!(false, "unexpected progress: {:?}", progress);
+            }
+        }).expect("failed to transmit data");
+        println!("{} bytes written", bytes);
+    }
 }
