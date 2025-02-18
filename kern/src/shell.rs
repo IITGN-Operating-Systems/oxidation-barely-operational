@@ -37,12 +37,68 @@ impl<'a> Command<'a> {
 
     /// Returns this command's path. This is equivalent to the first argument.
     fn path(&self) -> &str {
-        unimplemented!()
+        self.args[0]
     }
 }
 
 /// Starts a shell using `prefix` as the prefix for each line. This function
 /// returns if the `exit` command is called.
-pub fn shell(prefix: &str) -> ! {
-    unimplemented!()
+pub fn shell(prefix: &str) {
+    let mut working_dir = PathBuf::from("/");
+
+    loop {
+        let mut buf_storage = [0u8; 512];
+        let mut buf = StackVec::new(&mut buf_storage);
+
+        kprint!("{}", prefix);
+
+        loop {
+            let byte = CONSOLE.lock().read_byte();
+
+            if byte == b'\r' || byte == b'\n' {
+                let mut command_storage: [&str; 64] = [""; 64];
+                let result = Command::parse(
+                    str::from_utf8(buf.into_slice()).unwrap(),
+                    &mut command_storage);
+
+                kprint!("\n");
+
+                match result {
+                    Err(Error::TooManyArgs) => {
+                        kprintln!("error: too many arguments");
+                    },
+                    Err(Error::Empty) => {
+                        // No command, ignore.
+                    }
+                    Ok(command) => {
+                        if !command.execute(&mut working_dir) {
+                            return;
+                        }
+                    },
+                }
+
+                break
+            } else {
+                let mut console = CONSOLE.lock();
+
+                if byte == BACKSPACE || byte == DELETE {
+                    // Handle backspace and delete to erase a single character.
+                    if buf.pop() == None {
+                        console.write_byte(BELL);
+                    } else {
+                        console.write(&[BACKSPACE, b' ', BACKSPACE]).expect("write");
+                    }
+                } else if byte < 32 || byte == 255 {
+                    // Discard non-printable characters and send an alert.
+                    console.write_byte(BELL);
+                } else {
+                    if buf.push(byte).is_err() {
+                        console.write_byte(BELL);
+                    } else {
+                        console.write_byte(byte);
+                    }
+                }
+            }
+        }
+    }
 }
