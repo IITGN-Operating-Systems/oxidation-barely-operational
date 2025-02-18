@@ -162,8 +162,6 @@ mod uart_io {
     // The `io::Write::write()` method must write all of the requested bytes
     // before returning.
     impl io::Read for MiniUart {
-        /// Waits until the timeout duration but data to arrive, and then reads
-        /// any available data, up to buf.len() bytes.
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             if self.wait_for_byte().is_err() {
                 Err(io::Error::new(io::ErrorKind::TimedOut,
@@ -181,8 +179,6 @@ mod uart_io {
     }
 
     impl io::Write for MiniUart {
-        /// Write the requested buffer to the miniUART, and wait for it to
-        /// finish transmitting before returning.
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             for &byte in buf {
                 self.write_byte(byte);
@@ -191,11 +187,7 @@ mod uart_io {
             Ok(buf.len())
         }
 
-        /// Flush the buffer (no-ops for miniUART).
         fn flush(&mut self) -> io::Result<()> {
-            // Technically the miniUART may still be transmitting, but the
-            // buffers are hardware buffers and will not be reset if this object
-            // is destroyed, so it's safe to no-op this flush() function.
             Ok(())
         }
     }
