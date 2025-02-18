@@ -18,16 +18,15 @@ impl Console {
     /// Initializes the console if it's not already initialized.
     #[inline]
     fn initialize(&mut self) {
-        self.inner = Some(MiniUart::new())
+        if self.inner.is_none() {
+            self.inner = Some(MiniUart::new());
+        }
     }
 
     /// Returns a mutable borrow to the inner `MiniUart`, initializing it as
     /// needed.
     fn inner(&mut self) -> &mut MiniUart {
-        if self.inner.is_none() {
-            self.initialize();
-        }
-
+        self.initialize();
         self.inner.as_mut().unwrap()
     }
 
@@ -44,13 +43,27 @@ impl Console {
 
 impl io::Read for Console {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner().read(buf)
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        // Block until the first byte is read.
+        buf[0] = self.read_byte();
+        let mut count = 1;
+        // Then, try to drain any immediately available bytes.
+        while count < buf.len() && self.inner().has_byte() {
+            buf[count] = self.inner().read_byte();
+            count += 1;
+        }
+        Ok(count)
     }
 }
 
 impl io::Write for Console {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner().write(buf)
+        for &byte in buf {
+            self.write_byte(byte);
+        }
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -60,7 +73,10 @@ impl io::Write for Console {
 
 impl fmt::Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.inner().write_str(s)
+        for byte in s.bytes() {
+            self.write_byte(byte);
+        }
+        Ok(())
     }
 }
 

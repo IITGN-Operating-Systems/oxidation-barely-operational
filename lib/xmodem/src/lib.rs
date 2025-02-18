@@ -184,18 +184,18 @@ impl<T: io::Read + io::Write> Xmodem<T> {
     fn expect_byte_or_cancel(&mut self, byte: u8, expected: &'static str) -> io::Result<u8> {
         let byte_in = self.read_byte(false)?;
 
-        if byte_in != byte {
+        if byte_in == byte {
+            Ok(byte)
+        } else {
             self.write_byte(CAN)?;
             if byte_in == CAN {
                 Err(io::Error::new(
                     io::ErrorKind::ConnectionAborted,
-                    "received CAN",
+                    "Byte mismatch; received CAN",
                 ))
             } else {
                 Err(io::Error::new(io::ErrorKind::InvalidData, expected))
             }
-        } else {
-            Ok(byte)
         }
     }
 
@@ -213,14 +213,13 @@ impl<T: io::Read + io::Write> Xmodem<T> {
     fn expect_byte(&mut self, byte: u8, expected: &'static str) -> io::Result<u8> {
         let byte_in = self.read_byte(false)?;
 
-        if byte_in == CAN {
-            
+        if byte_in == byte {
+            Ok(byte)
+        } else if byte_in == CAN {
             Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                "received CAN",
+                "Byte mismatch; received CAN",
             ))
-        } else if byte_in == byte {
-            Ok(byte)
         } else {
             Err(io::Error::new(io::ErrorKind::InvalidData, expected))
         }
@@ -250,8 +249,12 @@ impl<T: io::Read + io::Write> Xmodem<T> {
     ///
     /// An error of kind `UnexpectedEof` is returned if `buf.len() < 128`.
     pub fn read_packet(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        
-
+        if buf.len() < 128 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Buffer size must be at least 128 bytes",
+            ));
+        }
 
         if !self.started {
             self.write_byte(NAK)?;
@@ -262,33 +265,37 @@ impl<T: io::Read + io::Write> Xmodem<T> {
         match self.read_byte(true)? {
             EOT => {
                 self.write_byte(NAK)?;
-                self.expect_byte(EOT, "Expected second EOT to confirm end of transmission")?;
+                self.expect_byte(EOT, "Expected EOT for end of transmission")?;
                 self.write_byte(ACK)?;
                 self.started = false;
                 Ok(0)
             }
             SOH => {
-                let packet_num = self.packet;
-                self.expect_byte_or_cancel(packet_num, "Incorrect packet number")?;
-                self.expect_byte_or_cancel(!packet_num, "Packet number mismatch")?;
+                let packet = self.packet;
+                self.expect_byte_or_cancel(packet, "Packet number wrong")?;
+                self.expect_byte_or_cancel(!packet, "Packet number checksum failed")?;
+                self.inner.read_exact(&mut buf[..])?;
 
-                let mut checksum: u8 = 0;
-                for byte in buf.iter_mut() {
-                    *byte = self.read_byte(false)?;
-                    checksum = checksum.wrapping_add(*byte);
-                }
+                let checksum = get_checksum(&buf[..]);
 
                 if self.read_byte(false)? != checksum {
                     self.write_byte(NAK)?;
-                    Err(io::Error::new(io::ErrorKind::Interrupted, "Checksum validation failed"))
+                    Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Packet data checksum failed",
+                    ))
                 } else {
                     self.write_byte(ACK)?;
+
                     (self.progress)(Progress::Packet(self.packet));
                     self.packet = self.packet.wrapping_add(1);
                     Ok(128)
                 }
             }
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unexpected byte, expected SOH or EOT")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Expected SOH or EOT",
+            )),
         }
     }
 
@@ -323,44 +330,53 @@ impl<T: io::Read + io::Write> Xmodem<T> {
     ///
     /// An error of kind `Interrupted` is returned if a packet checksum fails.
     pub fn write_packet(&mut self, buf: &[u8]) -> io::Result<usize> {
-        
-
+        if buf.len() < 128 && !buf.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Buffer size must be at least 128 bytes",
+            ));
+        }
 
         if !self.started {
             (self.progress)(Progress::Waiting);
+            self.expect_byte(NAK, "Expected NAK to start transfer")?;
             self.started = true;
-            self.expect_byte(NAK, "Expected NAK to initiate transfer")?;
             (self.progress)(Progress::Started);
         }
 
         if buf.is_empty() {
             self.write_byte(EOT)?;
-            self.expect_byte(NAK, "Expected NAK after first EOT")?;
+            self.expect_byte(NAK, "Expected NAK for EOT")?;
             self.write_byte(EOT)?;
-            self.expect_byte(ACK, "Expected ACK after second EOT")?;
+            self.expect_byte(ACK, "Expected ACK for EOT")?;
             self.started = false;
             return Ok(0);
         }
 
-        let packet_num = self.packet;
+        let packet = self.packet;
         self.write_byte(SOH)?;
-        self.write_byte(packet_num)?;
-        self.write_byte(!packet_num)?;
+        self.write_byte(packet)?;
+        self.write_byte(!packet)?;
+        self.inner.write_all(buf)?;
 
-        let checksum = get_checksum(buf);
-        for &byte in buf.iter() {
-            self.write_byte(byte)?;
-        }
+        let checksum = get_checksum(&buf[..]);
         self.write_byte(checksum)?;
 
-        match self.read_byte(true)? {
+        let result = self.read_byte(true)?;
+        match result {
             ACK => {
                 (self.progress)(Progress::Packet(self.packet));
                 self.packet = self.packet.wrapping_add(1);
                 Ok(buf.len())
             }
-            NAK => Err(io::Error::new(io::ErrorKind::Interrupted, "Receiver reported data corruption")),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unexpected response, expected ACK or NAK")),
+            NAK => Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Data corrupted from receiver",
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Expected ACK or NAK",
+            )),
         }
     }
 

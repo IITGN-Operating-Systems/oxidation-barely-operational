@@ -13,13 +13,16 @@ pub mod mutex;
 pub mod shell;
 
 use console::kprintln;
-use crate::shell::shell;
+use shell::shell;
 
 // FIXME: You need to add dependencies here to
 // test your drivers (Phase 2). Add them as needed.
 
-fn kmain() -> ! {
-    // Start the shell with a prefix
-    shell("shell> ");
-    loop {}
+
+#[no_mangle]
+pub extern "C" fn kmain() -> ! {
+    // FIXME: Start the shell.
+    kprintln!("Welcome to the OS shell!");
+    // Start the shell with the prompt "> "
+    shell("> ");
 }
