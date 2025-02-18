@@ -8,7 +8,10 @@ authors = [
     "Sujin Park <sujin.park@gatech.edu>",
     "Mansour Alharthi <mansourah@gatech.edu>"
 ]
-edition = "2021"
+edition = "2018"
+
+[package.metadata.cargo-xbuild]
+memcpy = true
 
 [dependencies]
 pi = { path = "../lib/pi" }
@@ -17,9 +20,3 @@ stack-vec = { path = "../lib/stack-vec/" }
 
 [dev-dependencies]
 shim = { path = "../lib/shim"}
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
